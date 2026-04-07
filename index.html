@@ -11,10 +11,16 @@
   <title>TradeVault</title>
 
   <script>
-    const _m={name:"TradeVault",short_name:"TradeVault",start_url:".",display:"standalone",background_color:"#060b18",theme_color:"#060b18",orientation:"portrait",icons:[{src:"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='40' fill='%23060b18'/><text y='130' x='96' text-anchor='middle' font-size='110'>💹</text></svg>",sizes:"192x192",type:"image/svg+xml"}]};
+    // Build SVG icon as data URL
+    const _svg=`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='110' fill='%23060b18'/><rect x='60' y='60' width='392' height='392' rx='80' fill='%230c1426'/><polyline points='90,340 180,220 260,280 360,150 420,180' fill='none' stroke='%2306d6a0' stroke-width='28' stroke-linecap='round' stroke-linejoin='round'/><circle cx='420' cy='180' r='22' fill='%2306d6a0'/><text x='256' y='470' text-anchor='middle' font-family='sans-serif' font-size='52' font-weight='700' fill='%233b82f6' letter-spacing='2'>VAULT</text></svg>`;
+    const _enc=encodeURIComponent(_svg);
+    const _iconUrl=`data:image/svg+xml,${_enc}`;
+    const _m={name:"TradeVault",short_name:"TradeVault",start_url:".",display:"standalone",background_color:"#060b18",theme_color:"#060b18",orientation:"portrait",icons:[{src:_iconUrl,sizes:"512x512",type:"image/svg+xml"},{src:_iconUrl,sizes:"192x192",type:"image/svg+xml"}]};
     const _b=new Blob([JSON.stringify(_m)],{type:'application/json'});
     const _l=document.createElement('link');_l.rel='manifest';_l.href=URL.createObjectURL(_b);
-    document.currentScript.after(_l);
+    // Apple touch icon
+    const _al=document.createElement('link');_al.rel='apple-touch-icon';_al.href=_iconUrl;
+    document.currentScript.after(_l,_al);
   </script>
 
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
@@ -194,6 +200,17 @@
     /* SPINNER */
     .spin{border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;width:18px;height:18px;animation:spin .6s linear infinite;margin:0 auto;}
     @keyframes spin{to{transform:rotate(360deg);}}
+
+    /* INSTALL BANNER */
+    .install-banner{background:var(--s1);border:1px solid rgba(59,130,246,.3);border-radius:14px;padding:.85rem 1rem;display:flex;align-items:center;gap:.8rem;animation:fadeSlide .4s ease;}
+    @keyframes fadeSlide{from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:none;}}
+    .install-icon{font-size:1.5rem;flex-shrink:0;}
+    .install-text{flex:1;line-height:1.5;font-size:.72rem;color:var(--muted);}
+    .install-text strong{color:var(--text);display:block;font-family:var(--fh);font-size:.78rem;margin-bottom:.1rem;}
+    .btn-install{background:linear-gradient(135deg,var(--accent),#2563eb);color:#fff;border:none;border-radius:8px;font-family:var(--fh);font-size:.72rem;font-weight:700;padding:.42rem .8rem;cursor:pointer;white-space:nowrap;flex-shrink:0;}
+    .btn-dismiss{background:none;border:none;color:var(--muted);cursor:pointer;font-size:.95rem;padding:.2rem;flex-shrink:0;}
+    .dc-btn.adj:hover{border-color:var(--gold);color:var(--gold);background:rgba(255,209,102,.07);}
+    .asset-lev-pill{display:inline-flex;align-items:center;gap:.25rem;font-size:.65rem;font-weight:600;font-family:var(--fh);padding:.18rem .5rem;border-radius:6px;margin-top:.25rem;}
   </style>
 </head>
 <body>
@@ -228,6 +245,17 @@
 
   <main>
 
+    <!-- Install banner -->
+    <div class="install-banner" id="install-banner" style="display:none">
+      <div class="install-icon">📲</div>
+      <div class="install-text">
+        <strong>Instalar TradeVault</strong>
+        Adicione à tela inicial — sem barra do navegador.
+      </div>
+      <button class="btn-install" id="btn-install">Instalar</button>
+      <button class="btn-dismiss" id="btn-dismiss">✕</button>
+    </div>
+
     <!-- Rate -->
     <div class="rate-bar">
       <span class="rate-label">USD / BRL</span>
@@ -243,6 +271,7 @@
       <div class="dc-actions">
         <button class="dc-btn dep" onclick="openDollarModal('deposit')">↑ Depositar</button>
         <button class="dc-btn wit" onclick="openDollarModal('withdrawal')">↓ Retirar</button>
+        <button class="dc-btn adj" onclick="openDollarModal('adjust')">✎ Ajustar</button>
       </div>
     </div>
 
@@ -292,9 +321,10 @@
   <div class="modal">
     <div class="modal-handle"></div>
     <div class="modal-title" id="dollar-modal-title">Depositar Dólares</div>
+    <div class="modal-subtitle" id="dollar-modal-sub" style="display:none"></div>
     <div class="form-group">
-      <label class="form-label">Valor (USD)</label>
-      <input type="number" class="form-input" id="dollar-amount" placeholder="0.00" min="0.01" step="0.01"/>
+      <label class="form-label" id="dollar-amount-label">Valor (USD)</label>
+      <input type="number" class="form-input" id="dollar-amount" placeholder="0.00" min="0" step="0.01"/>
     </div>
     <div class="form-group">
       <label class="form-label">Nota (opcional)</label>
@@ -743,11 +773,9 @@ function renderChart(){
   });
 }
 
-function renderAssets({positions}){
+function renderAssets({positions, dollarBal}){
   const wrap=el('asset-wrap');
   wrap.innerHTML='';
-
-  // Merge default + custom assets
   const allAssets={...DEFAULT_ASSETS};
   Object.entries(assets).forEach(([k,v])=>{ allAssets[k]=v; });
 
@@ -755,14 +783,21 @@ function renderAssets({positions}){
     const pos=positions[key]||{qty:0,avgPrice:0,totalCost:0};
     const posVal=pos.qty*pos.avgPrice;
 
-    // PnL from sell events for this asset
+    // Individual leverage: posVal / dollarBal
+    const indivRatio = dollarBal>0 ? posVal/dollarBal : (posVal>0?Infinity:0);
+    let levPillHtml='';
+    if(posVal>0){
+      const ratioStr=isFinite(indivRatio)?indivRatio.toFixed(2)+'×':'∞×';
+      let pc,bg;
+      if(indivRatio<0.5)     {pc='var(--green)'; bg='rgba(6,214,160,.12)';}
+      else if(indivRatio<1)  {pc='var(--gold)';  bg='rgba(255,209,102,.12)';}
+      else if(indivRatio<2)  {pc='var(--orange)';bg='rgba(251,146,60,.12)';}
+      else                   {pc='var(--red)';   bg='rgba(247,37,133,.12)';}
+      levPillHtml=`<div class="asset-lev-pill" style="color:${pc};background:${bg}">⚡ ${ratioStr} do capital</div>`;
+    }
+
+    // Realized PnL from updates
     let realizedPnl=0;
-    events.filter(e=>e.asset===key&&e.type==='sell').forEach(e=>{
-      const proceeds=e.qty*e.price;
-      const cost=(pos.avgPrice||0)*e.qty; // simplified
-      realizedPnl+=proceeds-cost;
-    });
-    // PnL from updates
     events.filter(e=>e.asset===key&&e.type==='update'&&e.pnl).forEach(e=>realizedPnl+=e.pnl);
 
     const div=document.createElement('div');
@@ -774,7 +809,8 @@ function renderAssets({positions}){
           <div class="asset-name" style="color:${def.color||'#3b82f6'}">${def.name||key.toUpperCase()}</div>
           <div class="asset-pos">${pos.qty>0?pos.qty.toLocaleString('en-US',{maximumFractionDigits:8})+' unidades':'Sem posição'}</div>
           ${pos.avgPrice>0?`<div class="asset-avg">Preço médio: ${fUSD(pos.avgPrice)}</div>`:''}
-          ${realizedPnl!==0?`<div class="asset-pnl"><span style="color:${col(realizedPnl)}">${sign(realizedPnl)} ${fUSD(Math.abs(realizedPnl))} L/P</span></div>`:''}
+          ${levPillHtml}
+          ${realizedPnl!==0?`<div class="asset-pnl"><span style="color:${col(realizedPnl)}">${sign(realizedPnl)} ${fUSD(Math.abs(realizedPnl))} L/P acum.</span></div>`:''}
         </div>
         <div class="asset-right">
           <div class="asset-val">${fUSD(posVal)}</div>
@@ -852,19 +888,42 @@ function renderHistory(){
 let dollarMode='deposit';
 function openDollarModal(mode){
   dollarMode=mode;
-  el('dollar-modal-title').textContent=mode==='deposit'?'Depositar Dólares':'Retirar Dólares';
-  el('dollar-amount').value=''; el('dollar-note').value='';
+  const titles={deposit:'Depositar Dólares',withdrawal:'Retirar Dólares',adjust:'Ajustar Saldo em Dólar'};
+  const labels={deposit:'Valor a depositar (USD)',withdrawal:'Valor a retirar (USD)',adjust:'Novo saldo total (USD)'};
+  el('dollar-modal-title').textContent=titles[mode];
+  el('dollar-amount-label').textContent=labels[mode];
+  const subEl=el('dollar-modal-sub');
+  if(mode==='adjust'){
+    const {dollarBal}=computeState();
+    subEl.textContent=`Saldo atual: ${fUSD(dollarBal)}`;
+    subEl.style.display='block';
+    el('dollar-amount').value=dollarBal>0?dollarBal.toFixed(2):'';
+  } else {
+    subEl.style.display='none';
+    el('dollar-amount').value='';
+  }
+  el('dollar-note').value='';
   openModal('modal-dollar');
   setTimeout(()=>el('dollar-amount').focus(),350);
 }
 el('dollar-save').addEventListener('click',async()=>{
   const amount=parseFloat(el('dollar-amount').value);
-  if(!amount||amount<=0){ el('dollar-amount').classList.add('error'); setTimeout(()=>el('dollar-amount').classList.remove('error'),1200); return; }
+  if(isNaN(amount)||amount<0){ el('dollar-amount').classList.add('error'); setTimeout(()=>el('dollar-amount').classList.remove('error'),1200); return; }
   savingStart('dollar-save');
-  await addEvent({type:dollarMode==='deposit'?'dollar_deposit':'dollar_withdrawal', amount, note:el('dollar-note').value.trim()});
+  if(dollarMode==='adjust'){
+    // Compute difference and store as deposit or withdrawal
+    const {dollarBal}=computeState();
+    const diff=amount-dollarBal;
+    if(Math.abs(diff)<0.001){ savingEnd('dollar-save','Salvar'); closeAllModals(); showToast('Saldo sem alteração'); return; }
+    await addEvent({type:diff>0?'dollar_deposit':'dollar_withdrawal', amount:Math.abs(diff), note:el('dollar-note').value.trim()||`Ajuste manual → ${fUSD(amount)}`});
+    showToast(`✅ Saldo ajustado para ${fUSD(amount)}`);
+  } else {
+    if(amount<=0){ el('dollar-amount').classList.add('error'); setTimeout(()=>el('dollar-amount').classList.remove('error'),1200); savingEnd('dollar-save','Salvar'); return; }
+    await addEvent({type:dollarMode==='deposit'?'dollar_deposit':'dollar_withdrawal', amount, note:el('dollar-note').value.trim()});
+    showToast(dollarMode==='deposit'?'✅ Depósito registrado!':'✅ Retirada registrada!');
+  }
   savingEnd('dollar-save','Salvar');
   closeAllModals();
-  showToast(dollarMode==='deposit'?'✅ Depósito registrado!':'✅ Retirada registrada!');
 });
 
 // ══════════════════════════════════════════════════
@@ -1044,6 +1103,37 @@ document.querySelectorAll('.modal-overlay').forEach(m=>
 // ══════════════════════════════════════════════════
 function savingStart(btnId){ el(btnId).innerHTML='<div class="spin"></div>'; el(btnId).disabled=true; }
 function savingEnd(btnId,label){ el(btnId).innerHTML=label; el(btnId).disabled=false; }
+
+// ══════════════════════════════════════════════════
+// PWA INSTALL
+// ══════════════════════════════════════════════════
+let deferredInstall=null;
+
+window.addEventListener('beforeinstallprompt',e=>{
+  e.preventDefault(); deferredInstall=e;
+  el('install-banner').style.display='flex';
+});
+window.addEventListener('appinstalled',()=>{
+  el('install-banner').style.display='none';
+  showToast('🎉 TradeVault instalado!');
+});
+el('btn-install').addEventListener('click',async()=>{
+  if(!deferredInstall) return;
+  deferredInstall.prompt();
+  const {outcome}=await deferredInstall.userChoice;
+  if(outcome==='accepted') el('install-banner').style.display='none';
+  deferredInstall=null;
+});
+el('btn-dismiss').addEventListener('click',()=>{ el('install-banner').style.display='none'; });
+
+// iOS Safari fallback
+const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
+const isStandalone=window.navigator.standalone;
+if(isIOS&&!isStandalone){
+  const b=el('install-banner'); b.style.display='flex';
+  el('btn-install').style.display='none';
+  b.querySelector('.install-text').innerHTML='<strong>Instalar no iPhone/iPad</strong>Toque em <strong>Compartilhar ↑</strong> → <strong>"Adicionar à Tela de Início"</strong>';
+}
 </script>
 </body>
 </html>
