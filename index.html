@@ -467,11 +467,13 @@ const db   = firebase.firestore();
 // ══════════════════════════════════════════════════
 let uid          = null;
 let usdRate      = 5.15;
-let events       = [];   // all events from Firestore
-let assets       = {};   // asset definitions from Firestore
+let events       = [];
+let assets       = {};
 let levChart     = null;
 let pendingConfirm = null;
 let unsubs       = [];
+let btcPrice     = null;   // último preço de mercado do BTC
+let btcPriceTime = null;   // timestamp da última atualização
 
 // Default assets
 const DEFAULT_ASSETS = {
@@ -592,8 +594,24 @@ async function fetchRate(){
 }
 
 // ══════════════════════════════════════════════════
-// COMPUTE STATE FROM EVENTS
+// BTC MARKET PRICE (Binance API — manual refresh)
 // ══════════════════════════════════════════════════
+async function fetchBtcPrice(showFeedback=false){
+  const btn=document.getElementById('btc-refresh-btn');
+  if(btn){ btn.textContent='...'; btn.disabled=true; }
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
+    const d=await r.json();
+    btcPrice=parseFloat(d.price);
+    btcPriceTime=new Date();
+    renderAll();
+    if(showFeedback) showToast(`₿ BTC: ${fUSD(btcPrice)}`);
+  }catch{
+    if(showFeedback) showToast('Erro ao buscar preço do BTC','err');
+  }finally{
+    if(btn){ btn.textContent='↻'; btn.disabled=false; }
+  }
+}
 function computeState(){
   let dollarBal = 0;
   const positions = {}; // assetId -> { qty, avgPrice, totalCost }
@@ -638,9 +656,12 @@ function computeState(){
     }
   });
 
-  // Total assets value
+  // Total assets value — BTC uses market price if available
   let totalAssets = 0;
-  Object.values(positions).forEach(p=>{ totalAssets += p.qty * p.avgPrice; });
+  Object.entries(positions).forEach(([key,p])=>{
+    const price = (key==='btc' && btcPrice!==null) ? btcPrice : p.avgPrice;
+    totalAssets += p.qty * price;
+  });
 
   // Leverage = max(0, totalAssets - dollarBal)
   const leveraged = Math.max(0, totalAssets - dollarBal);
@@ -676,7 +697,10 @@ function buildChartData(){
       if(ev.pnl) dollarBal+=ev.pnl;
     }
 
-    const tot=Object.values(positions).reduce((s,p)=>s+p.qty*p.avgPrice,0);
+    const tot=Object.entries(positions).reduce((s,[k,p])=>{
+      const price=(k==='btc'&&btcPrice!==null)?btcPrice:p.avgPrice;
+      return s+p.qty*price;
+    },0);
     const lev=Math.max(0,tot-dollarBal);
     const ratio=dollarBal>0?lev/dollarBal:(lev>0?5:0);
     const d=ev.createdAt?.toDate?ev.createdAt.toDate():new Date();
@@ -781,24 +805,54 @@ function renderAssets({positions, dollarBal}){
 
   Object.entries(allAssets).forEach(([key,def])=>{
     const pos=positions[key]||{qty:0,avgPrice:0,totalCost:0};
-    const posVal=pos.qty*pos.avgPrice;
 
-    // Individual leverage: posVal / dollarBal
+    // For BTC: use market price if available, else avg price
+    const effectivePrice = (key==='btc' && btcPrice!==null) ? btcPrice : pos.avgPrice;
+    const posVal = pos.qty * effectivePrice;
+
+    // Individual leverage pill
     const indivRatio = dollarBal>0 ? posVal/dollarBal : (posVal>0?Infinity:0);
     let levPillHtml='';
     if(posVal>0){
       const ratioStr=isFinite(indivRatio)?indivRatio.toFixed(2)+'×':'∞×';
       let pc,bg;
-      if(indivRatio<0.5)     {pc='var(--green)'; bg='rgba(6,214,160,.12)';}
-      else if(indivRatio<1)  {pc='var(--gold)';  bg='rgba(255,209,102,.12)';}
-      else if(indivRatio<2)  {pc='var(--orange)';bg='rgba(251,146,60,.12)';}
-      else                   {pc='var(--red)';   bg='rgba(247,37,133,.12)';}
+      if(indivRatio<0.5)    {pc='var(--green)'; bg='rgba(6,214,160,.12)';}
+      else if(indivRatio<1) {pc='var(--gold)';  bg='rgba(255,209,102,.12)';}
+      else if(indivRatio<2) {pc='var(--orange)';bg='rgba(251,146,60,.12)';}
+      else                  {pc='var(--red)';   bg='rgba(247,37,133,.12)';}
       levPillHtml=`<div class="asset-lev-pill" style="color:${pc};background:${bg}">⚡ ${ratioStr} do capital</div>`;
     }
 
-    // Realized PnL from updates
-    let realizedPnl=0;
-    events.filter(e=>e.asset===key&&e.type==='update'&&e.pnl).forEach(e=>realizedPnl+=e.pnl);
+    // PnL from updates (realized)
+    let updPnl=0;
+    events.filter(e=>e.asset===key&&e.type==='update'&&e.pnl).forEach(e=>updPnl+=e.pnl);
+
+    // BTC section: unified PnL (unrealized via market + realized via updates)
+    let btcPnlHtml='';
+    let btcRefreshBtn='';
+    if(key==='btc'){
+      if(pos.qty>0){
+        if(btcPrice!==null){
+          const unrealized = pos.qty*(btcPrice - pos.avgPrice);
+          const totalPnl   = unrealized + updPnl;
+          const timeStr    = btcPriceTime ? btcPriceTime.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
+          btcPnlHtml=`
+            <div style="margin-top:.3rem;padding:.5rem .6rem;background:${totalPnl>=0?'rgba(6,214,160,.07)':'rgba(247,37,133,.07)'};border:1px solid ${totalPnl>=0?'rgba(6,214,160,.2)':'rgba(247,37,133,.2)'};border-radius:8px;">
+              <div style="font-size:.6rem;color:var(--muted);margin-bottom:.15rem;">L/P · Mercado ${fUSD(btcPrice)} · ${timeStr}</div>
+              <div style="font-family:var(--fh);font-weight:700;font-size:.85rem;color:${col(totalPnl)}">${sign(totalPnl)} ${fUSD(Math.abs(totalPnl))}</div>
+              <div style="font-size:.62rem;color:var(--muted)">${sign(totalPnl)} ${fBRL(Math.abs(totalPnl*usdRate))}</div>
+            </div>`;
+        } else {
+          btcPnlHtml=`<div style="font-size:.63rem;color:var(--muted);margin-top:.25rem">Toque ↻ para atualizar preço e alavancagem</div>`;
+        }
+      }
+      btcRefreshBtn=`<button class="a-btn upd" id="btc-refresh-btn" onclick="fetchBtcPrice(true)" style="flex:0;padding:.52rem .7rem" title="Atualizar preço BTC">↻</button>`;
+    } else {
+      // For non-BTC assets, show PnL from updates only
+      if(updPnl!==0){
+        btcPnlHtml=`<div class="asset-pnl" style="margin-top:.2rem"><span style="color:${col(updPnl)}">${sign(updPnl)} ${fUSD(Math.abs(updPnl))} L/P</span></div>`;
+      }
+    }
 
     const div=document.createElement('div');
     div.className='asset-card';
@@ -808,19 +862,21 @@ function renderAssets({positions, dollarBal}){
         <div class="asset-info">
           <div class="asset-name" style="color:${def.color||'#3b82f6'}">${def.name||key.toUpperCase()}</div>
           <div class="asset-pos">${pos.qty>0?pos.qty.toLocaleString('en-US',{maximumFractionDigits:8})+' unidades':'Sem posição'}</div>
-          ${pos.avgPrice>0?`<div class="asset-avg">Preço médio: ${fUSD(pos.avgPrice)}</div>`:''}
+          ${pos.avgPrice>0?`<div class="asset-avg">Preço médio: ${fUSD(pos.avgPrice)}${key==='btc'&&btcPrice!==null?` · Mercado: ${fUSD(btcPrice)}`:''}  </div>`:''}
           ${levPillHtml}
-          ${realizedPnl!==0?`<div class="asset-pnl"><span style="color:${col(realizedPnl)}">${sign(realizedPnl)} ${fUSD(Math.abs(realizedPnl))} L/P acum.</span></div>`:''}
+          ${btcPnlHtml}
         </div>
         <div class="asset-right">
           <div class="asset-val">${fUSD(posVal)}</div>
           <div class="asset-brl">${fBRL(posVal*usdRate)}</div>
+          ${key==='btc'&&btcPrice!==null&&pos.avgPrice>0?`<div style="font-size:.6rem;color:var(--muted);margin-top:.1rem">a mercado</div>`:''}
         </div>
       </div>
       <div class="asset-btns">
         <button class="a-btn buy"  onclick="openBuy('${key}')">↑ Comprar</button>
         <button class="a-btn sell" onclick="openSell('${key}')">↓ Vender</button>
         <button class="a-btn upd"  onclick="openUpdate('${key}')">✎ Atualizar</button>
+        ${btcRefreshBtn}
         ${!DEFAULT_ASSETS[key]?`<button class="a-btn del" onclick="removeAsset('${key}')">🗑</button>`:''}
       </div>`;
     wrap.appendChild(div);
@@ -1133,6 +1189,29 @@ if(isIOS&&!isStandalone){
   const b=el('install-banner'); b.style.display='flex';
   el('btn-install').style.display='none';
   b.querySelector('.install-text').innerHTML='<strong>Instalar no iPhone/iPad</strong>Toque em <strong>Compartilhar ↑</strong> → <strong>"Adicionar à Tela de Início"</strong>';
+}
+
+// ══════════════════════════════════════════════════
+// SERVICE WORKER — versão embutida no HTML
+// Toda vez que este HTML é atualizado, o timestamp
+// muda e o SW invalida o cache antigo automaticamente.
+// ══════════════════════════════════════════════════
+if('serviceWorker' in navigator){
+  // Passa a versão como query param para forçar novo SW quando o HTML mudar
+  const BUILD='20250408-001'; // ← atualiza este valor a cada deploy
+  navigator.serviceWorker.register(`sw.js?v=${BUILD}`)
+    .then(reg=>{
+      reg.addEventListener('updatefound',()=>{
+        const newSW=reg.installing;
+        newSW.addEventListener('statechange',()=>{
+          if(newSW.state==='installed'&&navigator.serviceWorker.controller){
+            // Nova versão disponível — recarrega silenciosamente
+            navigator.serviceWorker.addEventListener('controllerchange',()=>location.reload());
+            newSW.postMessage({type:'SKIP_WAITING'});
+          }
+        });
+      });
+    });
 }
 </script>
 </body>
